@@ -10,6 +10,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	influxClient "github.com/influxdb/influxdb/client"
 )
@@ -89,6 +90,12 @@ func influxdb(influxdbHost, inputs, output string) error {
 			b := scanner.Bytes()
 			if err := json.Unmarshal(b, &msg); err != nil {
 				return err
+			}
+			if ts, ok := msg["timestamp"]; ok {
+				t, err := time.Parse(time.RFC3339Nano, ts.(string))
+				if err == nil {
+					msg["time"] = t
+				}
 			}
 
 			series := &influxClient.Series{
