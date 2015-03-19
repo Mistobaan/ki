@@ -9,7 +9,9 @@ import (
 	"log"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	influxClient "github.com/influxdb/influxdb/client"
@@ -34,15 +36,23 @@ type mymap map[string]interface{}
 func (m mymap) keys() []string {
 	var keys []string
 	for k := range m {
+		if k == "time" {
+			continue
+		}
 		keys = append(keys, k)
 	}
+
+	sort.Sort(sort.StringSlice(keys))
+	// "time" must be the first
+	copy(keys[1:], keys[0:])
+	keys[0] = "time"
 	return keys
 }
 
 func (m mymap) values() []interface{} {
 	var values []interface{}
-	for _, v := range m {
-		values = append(values, v)
+	for _, v := range m.keys() {
+		values = append(values, m[v])
 	}
 	return values
 }
@@ -63,8 +73,6 @@ func influxdb(influxdbHost, inputs, output string) error {
 		return err
 	}
 
-	log.Printf("%#v", cfg)
-
 	out, err := file(output, false)
 	if err != nil {
 		return err
@@ -83,32 +91,39 @@ func influxdb(influxdbHost, inputs, output string) error {
 		panic(err)
 	}
 
+	var wg sync.WaitGroup
+
 	for _, r := range srcs {
-		msg := mymap{}
 		scanner := bufio.NewScanner(r)
 		for scanner.Scan() {
+			msg := mymap{}
 			b := scanner.Bytes()
 			if err := json.Unmarshal(b, &msg); err != nil {
 				return err
 			}
-			if ts, ok := msg["timestamp"]; ok {
-				t, err := time.Parse(time.RFC3339Nano, ts.(string))
-				if err == nil {
-					msg["time"] = t
+			wg.Add(1)
+			go func(msg mymap) {
+				defer wg.Done()
+				if ts, ok := msg["timestamp"]; ok {
+					t, err := time.Parse(time.RFC3339Nano, ts.(string))
+					if err == nil {
+						msg["time"] = t.UnixNano() / int64(time.Millisecond)
+					}
 				}
-			}
 
-			series := &influxClient.Series{
-				Name:    cfg.params["s"], // s = series
-				Columns: msg.keys(),
-				Points: [][]interface{}{
-					msg.values(),
-				},
-			}
-			if err := c.WriteSeries([]*influxClient.Series{series}); err != nil {
-				log.Println(err)
-				continue
-			}
+				series := &influxClient.Series{
+					Name:    cfg.params["s"], // s = series
+					Columns: msg.keys(),
+					Points: [][]interface{}{
+						msg.values(),
+					},
+				}
+
+				if err := c.WriteSeries([]*influxClient.Series{series}); err != nil {
+					log.Println(err)
+					return
+				}
+			}(msg)
 
 			// pipe through
 			if _, err := out.Write(b); err != nil {
@@ -125,6 +140,7 @@ func influxdb(influxdbHost, inputs, output string) error {
 		}
 	}
 
+	wg.Wait()
 	// connect to influxdb
 	// for each line
 	//    parse json
