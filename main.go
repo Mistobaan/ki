@@ -115,7 +115,7 @@ func influxdb(influxdbHost, inputs, output string) error {
 					},
 				}
 
-				if err := c.WriteSeriesOverUDP([]*influxClient.Series{series}); err != nil {
+				if err := c.WriteSeries([]*influxClient.Series{series}); err != nil {
 					log.Println(err)
 					return
 				}
