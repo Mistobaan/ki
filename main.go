@@ -91,19 +91,15 @@ func influxdb(influxdbHost, inputs, output string) error {
 		panic(err)
 	}
 
+	ch := make(chan mymap, 10)
+
 	var wg sync.WaitGroup
 
-	for _, r := range srcs {
-		scanner := bufio.NewScanner(r)
-		for scanner.Scan() {
-			msg := mymap{}
-			b := scanner.Bytes()
-			if err := json.Unmarshal(b, &msg); err != nil {
-				return err
-			}
-			wg.Add(1)
-			go func(msg mymap) {
-				defer wg.Done()
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for msg := range ch {
 				if ts, ok := msg["timestamp"]; ok {
 					t, err := time.Parse(time.RFC3339Nano, ts.(string))
 					if err == nil {
@@ -119,18 +115,32 @@ func influxdb(influxdbHost, inputs, output string) error {
 					},
 				}
 
-				if err := c.WriteSeries([]*influxClient.Series{series}); err != nil {
+				if err := c.WriteSeriesOverUDP([]*influxClient.Series{series}); err != nil {
 					log.Println(err)
 					return
 				}
-			}(msg)
+			}
+		}()
+	}
+
+	const EOL = '\n'
+	for _, r := range srcs {
+		scanner := bufio.NewScanner(r)
+		for scanner.Scan() {
+			msg := mymap{}
+			b := scanner.Bytes()
+			if err := json.Unmarshal(b, &msg); err != nil {
+				return err
+			}
+
+			ch <- msg
 
 			// pipe through
 			if _, err := out.Write(b); err != nil {
 				return err
 			}
 			// newline
-			if _, err := out.Write([]byte{'\n'}); err != nil {
+			if _, err := out.Write([]byte{EOL}); err != nil {
 				return err
 			}
 		}
@@ -141,11 +151,6 @@ func influxdb(influxdbHost, inputs, output string) error {
 	}
 
 	wg.Wait()
-	// connect to influxdb
-	// for each line
-	//    parse json
-	//    send as influxdb data point
-	//    profit
 	return nil
 }
 
